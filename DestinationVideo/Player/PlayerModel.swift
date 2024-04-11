@@ -18,7 +18,8 @@ enum Presentation {
     case fullWindow
 }
 
-@Observable class PlayerModel {
+@Observable class PlayerModel: NSObject, AVContentKeySessionDelegate {
+    
     
     /// A Boolean value that indicates whether playback is currently active.
     private(set) var isPlaying = false
@@ -37,6 +38,9 @@ enum Presentation {
     
     /// An object that manages the playback of a video's media.
     private var player = AVPlayer()
+    
+    /// AVContentKeySession for handling content key requests
+    private var contentKeySession: AVContentKeySession!
     
     /// The currently presented player view controller.
     ///
@@ -59,7 +63,11 @@ enum Presentation {
     private var timeObserver: Any? = nil
     private var subscriptions = Set<AnyCancellable>()
     
-    init() {
+    /// URLSession for network requests
+    let urlSession = URLSession(configuration: .default)
+    
+    override init() {
+        super.init()
         coordinator = VideoWatchingCoordinator(playbackCoordinator: player.playbackCoordinator)
         observePlayback()
         Task {
@@ -191,8 +199,15 @@ enum Presentation {
    }
     
     private func replaceCurrentItem(with video: Video) {
+        let asset = AVURLAsset(url: video.resolvedURL)
+        if (video.certificate != nil && video.license != nil) {
+            // Create the Content Key Session using the FairPlay Streaming key system.
+            contentKeySession = AVContentKeySession(keySystem: .fairPlayStreaming)
+            contentKeySession.setDelegate(self, queue: DispatchQueue(label: "\(Bundle.main.bundleIdentifier!).ContentKeyDelegateQueue"))
+            contentKeySession.addContentKeyRecipient(asset)
+        }
         // Create a new player item and set it as the player's current item.
-        let playerItem = AVPlayerItem(url: video.resolvedURL)
+        let playerItem = AVPlayerItem(asset: asset)
         // Set external metadata on the player item for the current video.
         playerItem.externalMetadata = createMetadataItems(for: video)
         // Set the new player item as current, and begin loading its data.
@@ -296,6 +311,94 @@ enum Presentation {
         guard let timeObserver = timeObserver else { return }
         player.removeTimeObserver(timeObserver)
         self.timeObserver = nil
+    }
+    
+    func contentKeySession(_ session: AVContentKeySession, didProvide keyRequest: AVContentKeyRequest) {
+        // Extract content identifier and license service URL from the key request
+        guard let contentKeyIdentifierString = keyRequest.identifier as? String,
+            let contentIdentifier = contentKeyIdentifierString.replacingOccurrences(of: "skd://", with: "") as String?,
+            let contentIdentifierData = contentIdentifier.data(using: .utf8)
+        else {
+            print("ERROR: Failed to retrieve the content identifier from the key request!")
+            return
+        }
+        
+        // Completion handler for making streaming content key request
+        let handleCkcAndMakeContentAvailable = { [weak self] (spcData: Data?, error: Error?) in
+            guard let strongSelf = self else { return }
+            
+            if let error = error {
+                print("ERROR: Failed to prepare SPC: \(error.localizedDescription)")
+                // Report SPC preparation error to AVFoundation
+                keyRequest.processContentKeyResponseError(error)
+                return
+            }
+            
+            guard let spcData = spcData else { return }
+            
+            // Send SPC to the license service to obtain CKC
+            var licenseRequest = URLRequest(url: (self!.currentItem?.license)!)
+            licenseRequest.httpMethod = "POST"
+            licenseRequest.httpBody = spcData
+            
+            var dataTask: URLSessionDataTask?
+            
+            dataTask = self!.urlSession.dataTask(with: licenseRequest, completionHandler: { (data, response, error) in
+                defer {
+                    dataTask = nil
+                }
+                
+                if let error = error {
+                    print("ERROR: Failed to get CKC: \(error.localizedDescription)")
+                } else if
+                    let ckcData = data,
+                    let response = response as? HTTPURLResponse,
+                    response.statusCode == 200 {
+                    // Create AVContentKeyResponse from CKC data
+                    let keyResponse = AVContentKeyResponse(fairPlayStreamingKeyResponseData: ckcData)
+                    // Provide the content key response to make protected content available for processing
+                    keyRequest.processContentKeyResponse(keyResponse)
+                }
+            })
+            
+            dataTask?.resume()
+        }
+        
+        do {
+            // Request the application certificate for the content key request
+            let applicationCertificate = try requestApplicationCertificate()
+            
+            // Make the streaming content key request with the specified options
+            keyRequest.makeStreamingContentKeyRequestData(
+                forApp: applicationCertificate,
+                contentIdentifier: contentIdentifierData,
+                options: [AVContentKeyRequestProtocolVersionsKey: [1]],
+                completionHandler: handleCkcAndMakeContentAvailable
+            )
+        } catch {
+            // Report error in processing content key response
+            keyRequest.processContentKeyResponseError(error)
+        }
+    }
+    
+    /*
+     Requests the Application Certificate.
+    */
+    func requestApplicationCertificate() throws -> Data {
+        var applicationCertificate: Data? = nil
+        
+        do {
+            // Load the FairPlay application certificate from the specified URL.
+            applicationCertificate = try Data(contentsOf: (currentItem?.certificate)!)
+        } catch {
+            // Handle any errors that occur while loading the certificate.
+            let errorMessage = "Failed to load the FairPlay application certificate. Error: \(error)"
+            print(errorMessage)
+            throw error
+        }
+        
+        // Return the loaded application certificate.
+        return applicationCertificate!
     }
     
     /// A coordinator that acts as the player view controller's delegate object.

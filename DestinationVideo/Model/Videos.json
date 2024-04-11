@@ -1,7 +1,9 @@
 [
     {
         "id": 1,
-        "url" : "http://playgrounds-cdn.apple.com/assets/beach/index.m3u8",
+        "url" : "https://na-fps.ezdrm.com/demo/ezdrm/master.m3u8",
+        "license": "https://fps.ezdrm.com/api/licenses/b99ed9e5-c641-49d1-bfa8-43692b686ddb",
+        "certificate": "https://fps.ezdrm.com/demo/video/eleisure.cer",
         "title": "A Beach",
         "image_name": "beach",
         "description": "From an award-winning producer and actor, \"A Beach\" is a sweeping, awe-inspiring drama depicting waves crashing on a scenic California beach. Sit back and enjoy the sweet sounds of the ocean while relaxing on a soft, sandy beach.",

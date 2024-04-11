@@ -14,6 +14,10 @@ struct Video: Identifiable, Hashable, Codable {
     let id: Int
     /// The URL of the video, which can be local or remote.
     let url: URL
+    /// The URL of the video, which can be local or remote.
+    let license: URL?
+    /// The URL of the video, which can be local or remote.
+    let certificate: URL?
     /// The title of the video.
     let title: String
     /// The base image name.
